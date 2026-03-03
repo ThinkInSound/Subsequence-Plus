@@ -108,16 +108,18 @@ Community and Feedback:
 - **Discussions:** Chat and ask questions at https://github.com/simonholliday/subsequence/discussions
 - **Issues:** Report bugs and request features at https://github.com/simonholliday/subsequence/issues
 
-Package-level exports: ``Composition``, ``Groove``, ``MelodicState``, ``register_scale``.
+Package-level exports: ``Composition``, ``Groove``, ``MelodicState``, ``register_scale``, ``bank_select``.
 """
 
 import subsequence.composition
 import subsequence.groove
 import subsequence.intervals
 import subsequence.melodic_state
+import subsequence.sequence_utils
 
 
 Composition = subsequence.composition.Composition
 Groove = subsequence.groove.Groove
 MelodicState = subsequence.melodic_state.MelodicState
 register_scale = subsequence.intervals.register_scale
+bank_select = subsequence.sequence_utils.bank_select

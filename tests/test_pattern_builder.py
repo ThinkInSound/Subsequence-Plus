@@ -3872,3 +3872,87 @@ def test_lsystem_stochastic_rules () -> None:
 
 	all_pitches = {n.pitch for step in pattern.steps.values() for n in step.notes}
 	assert all_pitches <= {60, 62, 64}
+
+
+# --- program_change ---
+
+
+def test_program_change_no_bank () -> None:
+
+	"""program_change() with no bank args emits a single program_change event."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(48)
+
+	assert len(pattern.cc_events) == 1
+	assert pattern.cc_events[0].message_type == 'program_change'
+	assert pattern.cc_events[0].value == 48
+
+
+def test_program_change_bank_msb_only () -> None:
+
+	"""bank_msb emits CC 0 before the program change."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(10, bank_msb=81)
+
+	assert len(pattern.cc_events) == 2
+	cc, pc = pattern.cc_events
+	assert cc.message_type == 'control_change'
+	assert cc.control == 0
+	assert cc.value == 81
+	assert pc.message_type == 'program_change'
+	assert pc.value == 10
+
+
+def test_program_change_bank_lsb_only () -> None:
+
+	"""bank_lsb emits CC 32 before the program change."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(10, bank_lsb=3)
+
+	assert len(pattern.cc_events) == 2
+	cc, pc = pattern.cc_events
+	assert cc.message_type == 'control_change'
+	assert cc.control == 32
+	assert cc.value == 3
+	assert pc.message_type == 'program_change'
+
+
+def test_program_change_bank_both () -> None:
+
+	"""Both bank_msb and bank_lsb emit CC 0, CC 32, then program change — in order."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(48, bank_msb=81, bank_lsb=0)
+
+	assert len(pattern.cc_events) == 3
+	msb, lsb, pc = pattern.cc_events
+	assert msb.message_type == 'control_change' and msb.control == 0  and msb.value == 81
+	assert lsb.message_type == 'control_change' and lsb.control == 32 and lsb.value == 0
+	assert pc.message_type == 'program_change'  and pc.value == 48
+
+
+def test_program_change_bank_same_pulse () -> None:
+
+	"""All three events share the same pulse position as the beat argument."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(10, beat=2.0, bank_msb=1, bank_lsb=0)
+
+	pulses = {e.pulse for e in pattern.cc_events}
+	assert len(pulses) == 1  # all at the same pulse
+
+
+def test_program_change_clamped () -> None:
+
+	"""Program and bank values outside 0–127 are clamped."""
+
+	pattern, builder = _make_builder(length=4)
+	builder.program_change(200, bank_msb=-5, bank_lsb=999)
+
+	msb, lsb, pc = pattern.cc_events
+	assert msb.value == 0
+	assert lsb.value == 127
+	assert pc.value == 127

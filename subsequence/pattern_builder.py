@@ -1886,36 +1886,74 @@ class PatternBuilder:
 			pulse += resolution
 
 
-	def program_change (self, program: int, beat: float = 0.0) -> None:
+	def program_change (
+		self,
+		program: int,
+		beat: float = 0.0,
+		bank_msb: typing.Optional[int] = None,
+		bank_lsb: typing.Optional[int] = None,
+	) -> None:
 
-		"""
-		Send a Program Change message at a beat position.
+		"""Send a Program Change message, optionally preceded by bank select.
 
 		Switches the instrument patch on this pattern's MIDI channel.
 		Program numbers follow the General MIDI numbering (0–127, where
 		e.g. 0 = Acoustic Grand Piano, 40 = Violin, 33 = Electric Bass).
 
+		To select a patch in a specific bank, provide ``bank_msb`` and/or
+		``bank_lsb``.  The bank select CC messages (CC 0 for MSB, CC 32 for
+		LSB) are sent at the same beat position immediately before the
+		program change, in the order the synthesizer expects.
+
 		Parameters:
 			program: Program (patch) number (0–127).
 			beat: Beat position within the pattern (default 0.0).
+			bank_msb: Bank select coarse (CC 0), 0–127.  ``None`` = omit.
+			bank_lsb: Bank select fine (CC 32), 0–127.  ``None`` = omit.
 
 		Example:
 			```python
 			@composition.pattern(channel=1, length=4)
 			def strings (p):
-			    p.program_change(48)  # Switch to String Ensemble 1 (GM #49)
-			    p.chord("major", root=60, velocity=75)
+			    # GM — no bank needed
+			    p.program_change(48)
+
+			    # Roland JV-1080 bank 1, patch 48
+			    p.program_change(48, bank_msb=81, bank_lsb=0)
+
+			    # Change patch only at the first bar of each section
+			    if p.section.bar == 0:
+			        p.program_change(48, bank_msb=1)
 			```
 		"""
 
-		program = max(0, min(127, program))
 		pulse = int(beat * subsequence.constants.MIDI_QUARTER_NOTE)
+
+		if bank_msb is not None:
+			self._pattern.cc_events.append(
+				subsequence.pattern.CcEvent(
+					pulse = pulse,
+					message_type = 'control_change',
+					control = 0,
+					value = max(0, min(127, bank_msb)),
+				)
+			)
+
+		if bank_lsb is not None:
+			self._pattern.cc_events.append(
+				subsequence.pattern.CcEvent(
+					pulse = pulse,
+					message_type = 'control_change',
+					control = 32,
+					value = max(0, min(127, bank_lsb)),
+				)
+			)
 
 		self._pattern.cc_events.append(
 			subsequence.pattern.CcEvent(
 				pulse = pulse,
 				message_type = 'program_change',
-				value = program
+				value = max(0, min(127, program)),
 			)
 		)
 

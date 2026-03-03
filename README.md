@@ -1305,6 +1305,56 @@ def strings (p):
 
 Program numbers follow General MIDI (0–127). The message fires at the beat position given by the optional `beat` argument (default 0.0 - the start of the pattern).
 
+#### Bank select
+
+For multi-bank hardware synths (Roland, Yamaha, Korg, etc.), pass `bank_msb` and/or `bank_lsb` to select the bank before the patch change. The two CC messages (CC 0 and CC 32) are sent automatically at the same beat position, in the correct order (CC 0 → CC 32 → program change):
+
+```python
+@composition.pattern(channel=1, length=4)
+def synth (p):
+    # Roland JV-1080 — bank MSB 81, LSB 0, patch 48
+    p.program_change(48, bank_msb=81, bank_lsb=0)
+    p.chord(chord, root=60, velocity=70, sustain=True)
+```
+
+Omit either parameter if your synth only uses one bank byte:
+
+```python
+p.program_change(12, bank_msb=1)   # MSB only
+p.program_change(12, bank_lsb=3)   # LSB only
+```
+
+`subsequence.bank_select(bank)` converts an integer bank number (0–16,383) to the `(msb, lsb)` pair — useful when a synth manual lists a single bank number:
+
+```python
+msb, lsb = subsequence.bank_select(128)   # → (1, 0)
+p.program_change(48, bank_msb=msb, bank_lsb=lsb)
+```
+
+#### Section-conditional patch switching
+
+To send a patch change only at the start of a section (not every bar), guard with `p.section.bar`:
+
+```python
+@composition.pattern(channel=1)
+def synth (p):
+    if p.section.bar == 0:             # first bar of this section
+        p.program_change(48, bank_msb=81, bank_lsb=0)
+    p.chord(chord, root=60, velocity=70, sustain=True)
+```
+
+Or switch patch depending on which section is playing:
+
+```python
+@composition.pattern(channel=1)
+def lead (p):
+    if p.section.name == "verse":
+        p.program_change(80)           # Square Lead
+    elif p.section.name == "chorus":
+        p.program_change(88)           # Fantasia Pad
+    p.note(root, velocity=90)
+```
+
 ### SysEx
 
 Send System Exclusive messages for deep hardware integration - Elektron parameter locking, patch dumps, vendor-specific commands:

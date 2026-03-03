@@ -701,7 +701,36 @@ def test_dropout_uses_builder_rng () -> None:
 	assert run_1 == run_2
 
 
-# --- Float length and set_length ---
+# --- p.grid property ---
+
+
+def test_grid_property_default () -> None:
+
+	"""p.grid returns 16 for a standard 4-beat pattern."""
+
+	pattern = subsequence.pattern.Pattern(channel=0, length=4)
+	builder = subsequence.pattern_builder.PatternBuilder(
+		pattern = pattern,
+		cycle = 0,
+		default_grid = 16
+	)
+
+	assert builder.grid == 16
+
+
+def test_grid_property_custom () -> None:
+
+	"""p.grid returns the grid set by a unit-based pattern."""
+
+	pattern = subsequence.pattern.Pattern(channel=0, length=1.5)  # 6 * SIXTEENTH
+	builder = subsequence.pattern_builder.PatternBuilder(
+		pattern = pattern,
+		cycle = 0,
+		default_grid = 6
+	)
+
+	assert builder.grid == 6
+
 
 
 def test_float_length_hit_steps () -> None:

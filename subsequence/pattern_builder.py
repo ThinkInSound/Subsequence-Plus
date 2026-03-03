@@ -95,6 +95,11 @@ class PatternBuilder:
 		self._default_grid: int = default_grid
 
 	@property
+	def grid (self) -> int:
+		"""Number of grid slots in this pattern (e.g. 16 for a 4-beat sixteenth-note pattern)."""
+		return self._default_grid
+
+	@property
 	def c (self) -> typing.Optional[subsequence.conductor.Conductor]:
 
 		"""Alias for self.conductor."""

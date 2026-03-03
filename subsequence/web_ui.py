@@ -33,6 +33,8 @@ class WebUI:
         self._ws_server: typing.Optional[websockets.asyncio.server.Server] = None
         self._broadcast_task: typing.Optional[asyncio.Task] = None
         self._clients: typing.Set[websockets.asyncio.server.ServerConnection] = set()
+        self._last_bar: int = -1
+        self._cached_patterns: typing.List[typing.Dict[str, typing.Any]] = []
 
     def start (self) -> None:
 
@@ -151,24 +153,32 @@ class WebUI:
         if comp.harmonic_state and comp.harmonic_state.current_chord:
             state["chord"] = comp.harmonic_state.current_chord.name()
             
-        for name, pattern in comp.running_patterns.items():
-            pattern_data: typing.Dict[str, typing.Any] = {
-                "name": name,
-                "muted": getattr(pattern, "_muted", False),
-                "length_pulses": int(pattern.length * state["pulses_per_beat"]),
-                "drum_map": getattr(pattern, "_drum_note_map", None),
-                "notes": []
-            }
-            if hasattr(pattern, "steps"):
-                for pulse, step in pattern.steps.items():
-                    for note in getattr(step, "notes", []):
-                        pattern_data["notes"].append({
-                            "p": note.pitch,
-                            "s": pulse,
-                            "d": note.duration,
-                            "v": note.velocity
-                        })
-            state["patterns"].append(pattern_data)
+        # Refresh pattern grid only when the bar changes, so the visual update
+        # is synced to when the pattern *starts playing*, not when it's rebuilt
+        # (which happens one lookahead beat early).
+        current_bar = state["global_bar"]
+        if current_bar != self._last_bar:
+            self._last_bar = current_bar
+            self._cached_patterns = []
+            for name, pattern in comp.running_patterns.items():
+                pattern_data: typing.Dict[str, typing.Any] = {
+                    "name": name,
+                    "muted": getattr(pattern, "_muted", False),
+                    "length_pulses": int(pattern.length * state["pulses_per_beat"]),
+                    "drum_map": getattr(pattern, "_drum_note_map", None),
+                    "notes": []
+                }
+                if hasattr(pattern, "steps"):
+                    for pulse, step in pattern.steps.items():
+                        for note in getattr(step, "notes", []):
+                            pattern_data["notes"].append({
+                                "p": note.pitch,
+                                "s": pulse,
+                                "d": note.duration,
+                                "v": note.velocity
+                            })
+                self._cached_patterns.append(pattern_data)
+        state["patterns"] = self._cached_patterns
 
         def _extract_val(val: typing.Any) -> typing.Optional[float]:
             if hasattr(val, "current"): # Matches EasedValue

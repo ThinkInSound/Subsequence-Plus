@@ -1307,27 +1307,8 @@ class Composition:
         if not self._clock_follow:
             self.bpm = bpm
 
-    def target_bpm (self, bpm: float, bars: int, shape: str = "linear") -> None:
-
-        """
-        Smoothly ramp the tempo to a target value over a number of bars.
-
-        Parameters:
-            bpm: Target tempo in beats per minute.
-            bars: Duration of the transition in bars.
-            shape: Easing curve name.  Defaults to ``"linear"``.
-                   ``"ease_in_out"`` or ``"s_curve"`` are recommended for natural-
-                   sounding tempo changes.  See :mod:`subsequence.easing` for all
-                   available shapes.
-
-        Example:
-            ```python
-            # Accelerate to 140 BPM over the next 8 bars with a smooth S-curve
-            comp.target_bpm(140, bars=8, shape="ease_in_out")
-            ```
-        """
-
-        self._sequencer.set_target_bpm(bpm, bars, shape)
+        if hasattr(self, '_link'):
+            self._link.tempo = bpm
 
     def live_info (self) -> typing.Dict[str, typing.Any]:
 
@@ -1769,14 +1750,14 @@ class Composition:
 
         # Ableton Link sync - bidirectional tempo control.
         loop = asyncio.get_running_loop()
-        link = Link(self.bpm, loop)
-        link.enabled = True
+        self._link = Link(self.bpm, loop)
+        self._link.enabled = True
 
         async def sync_tempo () -> None:
             while True:
                 await asyncio.sleep(0.5)
-                if abs(link.tempo - self._sequencer.current_bpm) > 0.1:
-                    self.set_bpm(link.tempo)
+                if abs(self._link.tempo - self._sequencer.current_bpm) > 0.1:
+                    self.set_bpm(self._link.tempo)
 
         asyncio.create_task(sync_tempo())
 

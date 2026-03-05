@@ -181,24 +181,6 @@ Older versions of POMSKI crashed on Windows due to a signal handler that Windows
 
 ---
 
-## Max for Live device
-
-If you use Ableton Live you can add a small MIDI device to any track that shows whether POMSKI is connected and lets you open the Web UI with one click.
-
-The device files are in `tools/m4l/`:
-
-**Setup (one time):**
-1. In Ableton, drag a **Max MIDI Effect** onto a MIDI track
-2. Click the pencil to open it in Max
-3. Select everything in the patch and delete it
-4. Open `subsequence_webui_PASTE.maxpat` in a text editor, copy everything, then go back to Max and choose **Edit → Paste from Clipboard**
-5. Copy `subsequence.js` into the same folder as your saved `.amxd` file
-6. First time only: click the `node.script` object and send it the message `script npm install ws`
-
-The device connects automatically when POMSKI is running and reconnects if it drops. You'll see a green LED when it's live and the current BPM ticking alongside it.
-
----
-
 ## API quick reference
 
 | Call | What it does |

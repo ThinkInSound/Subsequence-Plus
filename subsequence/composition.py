@@ -7,9 +7,9 @@ import random
 import re
 import signal
 import typing
-from aalink import Link
 
 import subsequence.chord_graphs
+import subsequence.constants
 import subsequence.constants.durations
 import subsequence.display
 import subsequence.harmonic_state
@@ -622,6 +622,9 @@ class Composition:
         self._live_server: typing.Optional[subsequence.live_server.LiveServer] = None
         self._is_live: bool = False
         self._running_patterns: typing.Dict[str, typing.Any] = {}
+
+        self._main_loop: typing.Optional[asyncio.AbstractEventLoop] = None
+        self._live_schedule_future: typing.Optional[typing.Any] = None
         self._input_device: typing.Optional[str] = None
         self._clock_follow: bool = False
         self._clock_output: bool = False
@@ -1577,11 +1580,75 @@ class Composition:
             """
 
             # Hot-swap: if we're live and a pattern with this name exists, replace its builder.
-            if self._is_live and fn.__name__ in self._running_patterns:
-                running = self._running_patterns[fn.__name__]
-                running._builder_fn = fn
-                running._wants_chord = _fn_has_parameter(fn, "chord")
-                logger.info(f"Hot-swapped pattern: {fn.__name__}")
+            # Also match by builder fn name to handle auto-assigned slots (e.g. euclidean → ch1).
+            if self._is_live:
+                slot_match = self._running_patterns.get(fn.__name__)
+                if slot_match is None:
+                    for slot_pat in self._running_patterns.values():
+                        bfn = getattr(slot_pat, '_builder_fn', None)
+                        if bfn is not None and bfn.__name__ == fn.__name__:
+                            slot_match = slot_pat
+                            break
+                if slot_match is not None:
+                    slot_match._builder_fn = fn
+                    slot_match._wants_chord = _fn_has_parameter(fn, "chord")
+                    slot_match.length = beat_length
+                    slot_match._default_grid = default_grid
+                    logger.info(f"Hot-swapped pattern: {fn.__name__}")
+                    return fn
+
+            # Live new pattern: build and schedule on the event loop thread.
+            if self._is_live and self._main_loop is not None:
+                try:
+                    # Auto-assign: if the name is unknown, steal the first empty slot
+                    resolved_channel = channel
+                    target_name = fn.__name__
+                    if fn.__name__ not in self._running_patterns:
+                        for slot_name, slot_pat in self._running_patterns.items():
+                            if not slot_pat.steps:  # empty = silent pass pattern
+                                resolved_channel = slot_pat.channel
+                                target_name = slot_name
+                                print(f"[LIVE] Auto-assigning '{fn.__name__}' → slot '{slot_name}' (ch {resolved_channel})", flush=True)
+                                break
+
+                    print(f"[LIVE] New pattern '{fn.__name__}' → '{target_name}' queuing to event loop", flush=True)
+                    _self = self
+                    _pending = _PendingPattern(
+                        builder_fn = fn,
+                        channel = resolved_channel,
+                        length = beat_length,
+                        default_grid = default_grid,
+                        drum_note_map = drum_note_map,
+                        reschedule_lookahead = reschedule_lookahead,
+                        voice_leading = voice_leading
+                    )
+
+                    async def _schedule(_p=_pending, _n=target_name):
+                        try:
+                            print(f"[LIVE] _schedule() running on event loop", flush=True)
+                            pat = _self._build_pattern_from_pending(_p, None)
+                            print(f"[LIVE] pattern built OK, steps={len(pat.steps)}", flush=True)
+                            old = _self._running_patterns.get(_n)
+                            if old is not None:
+                                old._deactivated = True
+                            _self._running_patterns[_n] = pat
+                            await _self._sequencer.schedule_pattern_repeating(pat, start_pulse=_self._sequencer.pulse_count)
+                            print(f"[LIVE] Scheduled '{_n}' OK", flush=True)
+                        except asyncio.CancelledError:
+                            print(f"[LIVE] CANCELLED", flush=True)
+                            raise
+                        except BaseException:
+                            import traceback
+                            print(f"[LIVE] ERROR in _schedule:", flush=True)
+                            traceback.print_exc()
+
+                    future = asyncio.run_coroutine_threadsafe(_schedule(), loop=self._main_loop)
+                    self._live_schedule_future = future  # prevent GC
+                    print(f"[LIVE] future submitted: {future}", flush=True)
+                except Exception:
+                    import traceback
+                    print(f"[LIVE] ERROR queuing '{fn.__name__}':", flush=True)
+                    traceback.print_exc()
                 return fn
 
             pending = _PendingPattern(
@@ -1748,18 +1815,39 @@ class Composition:
         Async entry point that schedules all patterns and runs the sequencer.
         """
 
-        # Ableton Link sync - bidirectional tempo control.
-        loop = asyncio.get_running_loop()
-        self._link = Link(self.bpm, loop)
-        self._link.enabled = True
+        # Store the running loop for use by the live decorator.
+        self._main_loop = asyncio.get_running_loop()
 
-        async def sync_tempo () -> None:
-            while True:
-                await asyncio.sleep(0.5)
-                if abs(self._link.tempo - self._sequencer.current_bpm) > 0.1:
-                    self.set_bpm(self._link.tempo)
+        # Ableton Link — run in a daemon thread to avoid ProactorEventLoop crash on Windows.
+        # aalink is optional; silently skip if not installed.
+        self._link_thread_running = False
+        try:
+            import aalink as _aalink
+            import threading as _threading
+            import time as _time
 
-        asyncio.create_task(sync_tempo())
+            self._link = _aalink.Link(self.bpm, self._main_loop)
+            self._link.enabled = True
+            self._link_thread_running = True
+
+            def _link_poll() -> None:
+                _last = self.bpm
+                while self._link_thread_running:
+                    try:
+                        tempo = self._link.tempo
+                        if abs(tempo - _last) > 0.05:
+                            _last = tempo
+                            self._sequencer.set_bpm(tempo)
+                            if not self._clock_follow:
+                                self.bpm = tempo
+                    except Exception:
+                        pass
+                    _time.sleep(0.05)
+
+            _threading.Thread(target=_link_poll, daemon=True).start()
+            logger.info("Ableton Link started (aalink)")
+        except ImportError:
+            pass
 
         # Pass MIDI input configuration to the sequencer before start.
         if self._input_device is not None:
@@ -1946,6 +2034,8 @@ class Composition:
             await self._osc_server.stop()
             self._sequencer.osc_server = None
 
+        self._link_thread_running = False
+
         if self._display is not None:
             self._display.stop()
 
@@ -2037,7 +2127,16 @@ class Composition:
                         self._builder_fn(builder)
 
                 except Exception:
+                    import traceback as _tb
+                    print(f"[REBUILD ERROR] {self._builder_fn.__name__}: {_tb.format_exc()}", flush=True)
                     logger.exception("Error in pattern builder '%s' (cycle %d) - pattern will be silent this cycle", self._builder_fn.__name__, current_cycle)
+
+                # If this rebuild produced notes, unsilence the channel so the
+                # new pattern plays immediately (e.g. after a clear_pattern).
+                if self.steps:
+                    seq = getattr(composition_ref, '_sequencer', None)
+                    if seq is not None:
+                        getattr(seq, 'silenced_channels', set()).discard(self.channel)
 
             def on_reschedule (self) -> None:
 

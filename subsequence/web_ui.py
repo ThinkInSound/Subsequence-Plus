@@ -35,6 +35,8 @@ class WebUI:
         self._clients: typing.Set[websockets.asyncio.server.ServerConnection] = set()
         self._last_bar: int = -1
         self._cached_patterns: typing.List[typing.Dict[str, typing.Any]] = []
+        import queue
+        self._midi_queue: queue.SimpleQueue = queue.SimpleQueue()
 
     def start (self) -> None:
 
@@ -54,7 +56,7 @@ class WebUI:
             def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
                 super().__init__(*args, directory=web_dir, **kwargs)
             def log_message(self, format: str, *args: typing.Any) -> None:
-                pass # Suppress HTTP access logging to keep the console clean
+                pass
 
         def run_server() -> None:
             socketserver.TCPServer.allow_reuse_address = True
@@ -74,86 +76,6 @@ class WebUI:
             urls.append(f"http://{local_ip}:{self.http_port}")
             
         logger.info("Web UI Dashboard available at:\n  " + "\n  ".join(urls))
-
-    def _get_midi_devices (self) -> typing.Dict[str, typing.List[str]]:
-        """Return available MIDI input and output port names via mido."""
-        try:
-            import mido
-            return {
-                "inputs":  mido.get_input_names(),
-                "outputs": mido.get_output_names(),
-            }
-        except Exception:
-            return {"inputs": [], "outputs": []}
-
-    def _get_link_state (self, comp: typing.Any) -> typing.Dict[str, typing.Any]:
-        """Return current Ableton Link state if aalink is present and attached."""
-        link = getattr(comp, '_link', None)
-        if link is None:
-            return {"available": False, "enabled": False, "tempo": None, "peers": 0}
-        try:
-            return {
-                "available": True,
-                "enabled":   bool(link.enabled),
-                "tempo":     round(float(link.tempo), 2),
-                "peers":     int(link.peers) if hasattr(link, 'peers') else 0,
-            }
-        except Exception:
-            return {"available": True, "enabled": False, "tempo": None, "peers": 0}
-
-    async def _forward_repl (self, code: str, websocket: websockets.asyncio.server.ServerConnection) -> None:
-        """Forward a code string to the live coding TCP server (port 5555) and relay the response."""
-        try:
-            reader, writer = await asyncio.open_connection('127.0.0.1', 5555)
-            writer.write((code + '\x04').encode('utf-8'))
-            await writer.drain()
-
-            response = b''
-            while True:
-                chunk = await asyncio.wait_for(reader.read(4096), timeout=5.0)
-                if not chunk:
-                    break
-                response += chunk
-                if b'\x04' in chunk:
-                    break
-
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-            result = response.replace(b'\x04', b'').decode('utf-8', errors='replace').strip()
-            # The live server returns raw traceback text on error - detect and re-route it
-            if result.startswith("Traceback ") or result.startswith("SyntaxError") or result.startswith("  File "):
-                reply = {"repl_error": result}
-            else:
-                reply = {"repl_result": result or "OK"}
-                # Clean up duplicate pending patterns after every successful REPL call —
-                # redefining a pattern appends a new _PendingPattern each time without
-                # removing the old one, so we deduplicate in place keeping the latest.
-                comp = self.composition_ref()
-                if comp is not None and hasattr(comp, '_pending_patterns'):
-                    seen: typing.Set[str] = set()
-                    deduped = []
-                    for p in reversed(comp._pending_patterns):
-                        name = getattr(p.builder_fn, '__name__', None)
-                        if name and name not in seen:
-                            seen.add(name)
-                            deduped.append(p)
-                    comp._pending_patterns[:] = list(reversed(deduped))
-
-        except asyncio.TimeoutError:
-            reply = {"repl_error": "Timeout - live server did not respond"}
-        except ConnectionRefusedError:
-            reply = {"repl_error": "Live server not running - call composition.live() before composition.play()"}
-        except Exception as e:
-            reply = {"repl_error": str(e)}
-
-        try:
-            await websocket.send(json.dumps(reply))
-        except Exception:
-            pass
 
     async def _handle_client (self, websocket: websockets.asyncio.server.ServerConnection) -> None:
 
@@ -186,6 +108,23 @@ class WebUI:
                             pat = comp.running_patterns.get(name)
                             if pat: pat._muted = False
 
+                    elif action == 'clear_pattern':
+                        name = cmd.get('pattern')
+                        if name and hasattr(comp, 'running_patterns'):
+                            pat = comp.running_patterns.get(name)
+                            if pat:
+                                pat._builder_fn = lambda p: None
+                                pat._wants_chord = False
+                                pat._muted = False
+                                self._last_bar = -1  # invalidate pattern cache
+                                # Silence the channel immediately so pre-queued
+                                # note_on events are skipped at dispatch time.
+                                # The channel unsilences automatically when the
+                                # next rebuild produces notes.
+                                seq = getattr(comp, 'sequencer', None)
+                                if seq is not None:
+                                    seq.silenced_channels.add(pat.channel)
+
                     elif action == 'repl':
                         code = cmd.get('code', '').strip()
                         if code:
@@ -197,59 +136,236 @@ class WebUI:
                             link.enabled = not link.enabled
                             await websocket.send(json.dumps({"link_state": self._get_link_state(comp)}))
 
+                    elif action == 'clear_signal':
+                        sig_name = cmd.get('name')
+                        if sig_name and comp.conductor:
+                            comp.conductor._signals.pop(sig_name, None)
+                            comp.data.pop(sig_name, None)
+
                     elif action == 'get_midi_devices':
                         await websocket.send(json.dumps({"midi_devices": self._get_midi_devices()}))
 
                     elif action == 'set_midi_input':
-                        # Reopen the live input port via sequencer.reopen_input().
-                        # Also updates comp._input_device so live_info() stays accurate.
-                        device = cmd.get('device', '').strip()
-                        if device:
+                        device = cmd.get('device', '')
+                        seq = getattr(comp, 'sequencer', None)
+                        if seq and device:
                             try:
-                                seq = comp.sequencer
-                                seq.reopen_input(device)
-                                comp._input_device = seq.input_device_name  # reflect resolved name
-                                await websocket.send(json.dumps({
-                                    "repl_result": f"MIDI input: {seq.input_device_name}"
-                                }))
+                                seq.input_device_name = device
+                                seq.reopen_input()
+                                await websocket.send(json.dumps({"midi_input_set": device}))
                             except Exception as e:
-                                await websocket.send(json.dumps({"repl_error": f"MIDI input failed: {e}"}))
+                                await websocket.send(json.dumps({"midi_input_error": str(e)}))
 
                     elif action == 'set_midi_output':
-                        # Reopen the live output port via sequencer.reopen_output().
-                        # Also updates comp.output_device so it's consistent.
-                        device = cmd.get('device', '').strip()
-                        if device:
+                        device = cmd.get('device', '')
+                        seq = getattr(comp, 'sequencer', None)
+                        if seq and device:
                             try:
-                                seq = comp.sequencer
-                                seq.reopen_output(device)
-                                comp.output_device = seq.output_device_name  # reflect resolved name
-                                await websocket.send(json.dumps({
-                                    "repl_result": f"MIDI output: {seq.output_device_name}"
-                                }))
+                                import mido
+                                seq.midi_out = mido.open_output(device)
+                                seq.output_device_name = device
+                                await websocket.send(json.dumps({"midi_output_set": device}))
                             except Exception as e:
-                                await websocket.send(json.dumps({"repl_error": f"MIDI output failed: {e}"}))
+                                await websocket.send(json.dumps({"midi_output_error": str(e)}))
 
-                except Exception as e:
-                    logger.warning(f"WebUI command error: {e}")
+                    elif action == 'record_start':
+                        seq = getattr(comp, 'sequencer', None)
+                        if seq is not None:
+                            import datetime, os
+                            ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                            fname = f'session_{ts}.mid'
+                            seq.record_filename = fname
+                            seq.recorded_events = []
+                            seq.recording = True
+                            abs_path = os.path.abspath(fname)
+                            await websocket.send(json.dumps({'repl_result': f'record_start: seq id={id(seq)} recording={seq.recording} events={len(seq.recorded_events)}'}))
+                            await websocket.send(json.dumps({'record_state': 'recording', 'filename': abs_path}))
+                        else:
+                            await websocket.send(json.dumps({'record_state': 'error', 'filename': 'No sequencer found'}))
+
+                    elif action == 'record_stop':
+                        seq = getattr(comp, 'sequencer', None)
+                        if seq is not None:
+                            import os, traceback, mido
+                            n_events = len(getattr(seq, 'recorded_events', []))
+                            is_recording = getattr(seq, 'recording', None)
+                            filename = getattr(seq, 'record_filename', None) or 'session.mid'
+                            abs_path = os.path.abspath(filename)
+                            debug = f'seq={type(seq).__name__} recording={is_recording} events={n_events} file={abs_path}'
+                            await websocket.send(json.dumps({'repl_result': debug}))
+                            if not is_recording:
+                                await websocket.send(json.dumps({'record_state': 'error', 'filename': 'recording was not active — start recording first'}))
+                            elif n_events == 0:
+                                seq.recording = False
+                                await websocket.send(json.dumps({'record_state': 'error', 'filename': 'no events captured — MIDI may not have played during recording'}))
+                            else:
+                                try:
+                                    # Replicate save_recording() directly so we control the flow
+                                    ticks_per_pulse = 20
+                                    mid = mido.MidiFile(type=1)
+                                    mid.ticks_per_beat = 480
+                                    track = mido.MidiTrack()
+                                    mid.tracks.append(track)
+                                    events = sorted(seq.recorded_events, key=lambda x: x[0])
+                                    last_pulse = 0.0
+                                    for pulse, message in events:
+                                        delta = max(0, int((pulse - last_pulse) * ticks_per_pulse))
+                                        message.time = delta
+                                        track.append(message)
+                                        last_pulse = pulse
+                                    mid.save(abs_path)
+                                    seq.recording = False
+                                    seq.recorded_events = []
+                                    await websocket.send(json.dumps({'record_state': 'saved', 'filename': abs_path}))
+                                except Exception:
+                                    seq.recording = False
+                                    await websocket.send(json.dumps({'record_state': 'error', 'filename': traceback.format_exc()}))
+                        else:
+                            await websocket.send(json.dumps({'record_state': 'error', 'filename': f'No sequencer — comp attrs: {[a for a in dir(comp) if "seq" in a.lower()]}'}))
+
+                    elif action == 'live_clip_fire':
+                        live = getattr(comp, '_live_bridge', None)
+                        if live and live.connected:
+                            live.clip_play(cmd.get('track', 0), cmd.get('clip', 0))
+
+                    elif action == 'live_clip_stop':
+                        live = getattr(comp, '_live_bridge', None)
+                        if live and live.connected:
+                            live.clip_stop(cmd.get('track', 0), cmd.get('clip', 0))
+
+                    elif action == 'live_scene_fire':
+                        live = getattr(comp, '_live_bridge', None)
+                        if live and live.connected:
+                            live.scene_play(cmd.get('scene', 0))
+
+                    elif action == 'live_track_stop':
+                        live = getattr(comp, '_live_bridge', None)
+                        if live and live.connected:
+                            live.track_stop(cmd.get('track', 0))
+
+                except Exception:
+                    pass
 
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            self._clients.remove(websocket)
+            self._clients.discard(websocket)
 
-    async def _start_ws_server (self) -> None:
+    async def _forward_repl(self, code: str, websocket: websockets.asyncio.server.ServerConnection) -> None:
+        import asyncio as _asyncio
+        try:
+            reader, writer = await _asyncio.open_connection('127.0.0.1', 5555)
+            writer.write(code.encode('utf-8') + b'\x04')
+            await writer.drain()
+            chunks = []
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                if b'\x04' in chunk:
+                    before, _, _ = chunk.partition(b'\x04')
+                    chunks.append(before)
+                    break
+                chunks.append(chunk)
+            writer.close()
+            result = b''.join(chunks).decode('utf-8').strip()
+            is_error = any(x in result for x in ['Traceback', 'Error:', 'Exception:'])
 
+            # Deduplicate pending patterns and invalidate pattern cache
+            comp = self.composition_ref()
+            if comp is not None and not is_error:
+                pending = getattr(comp, '_pending_patterns', None)
+                if pending is not None:
+                    seen = {}
+                    for pp in reversed(pending):
+                        name = getattr(pp, '_builder_fn', None)
+                        name = getattr(name, '__name__', None) if name else None
+                        if name and name not in seen:
+                            seen[name] = pp
+                    pending[:] = list(reversed(list(seen.values())))
+                self._last_bar = -1  # force pattern list refresh on next broadcast
+
+            await websocket.send(json.dumps({
+                'repl_result' if not is_error else 'repl_error': result
+            }))
+        except Exception as e:
+            await websocket.send(json.dumps({'repl_error': str(e)}))
+
+    def _get_link_state(self, comp: typing.Any) -> dict:
+        link = getattr(comp, '_link', None)
+        if link is None:
+            return {"available": False}
+        return {"available": True, "enabled": bool(getattr(link, 'enabled', False))}
+
+    def _get_midi_devices(self) -> typing.Dict[str, typing.List[str]]:
+        try:
+            import mido
+            return {
+                "inputs":  mido.get_input_names(),
+                "outputs": mido.get_output_names(),
+            }
+        except Exception:
+            return {"inputs": [], "outputs": []}
+
+    async def _start_ws_server(self) -> None:
         try:
             self._ws_server = await websockets.asyncio.server.serve(self._handle_client, "0.0.0.0", self.ws_port)
-            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+            asyncio.create_task(self._broadcast_loop())
+            asyncio.create_task(self._midi_broadcast_loop())
         except Exception as e:
             logger.error(f"WebSocket server error: {e}")
 
-    async def _broadcast_loop (self) -> None:
+    def _register_midi_hook(self) -> None:
+        comp = self.composition_ref()
+        if comp is None:
+            return
+        seq = getattr(comp, 'sequencer', None)
+        if seq is None:
+            return
+        if getattr(seq, '_pomski_hooked', False):
+            return
+        original_send = seq._send_midi
+        midi_queue = self._midi_queue
+
+        def _hooked_send(event):
+            original_send(event)
+            if event.message_type in ('note_on', 'note_off', 'control_change'):
+                try:
+                    midi_queue.put_nowait({
+                        'type': event.message_type,
+                        'ch':   event.channel,
+                        'note': getattr(event, 'note', 0),
+                        'vel':  getattr(event, 'velocity', 0),
+                        'ctrl': getattr(event, 'control', 0),
+                        'val':  getattr(event, 'value', 0),
+                    })
+                except Exception:
+                    pass
+
+        seq._send_midi = _hooked_send
+        seq._pomski_hooked = True
+
+    async def _midi_broadcast_loop(self) -> None:
+        import queue as _queue
+        while True:
+            await asyncio.sleep(0.001)
+            if not self._clients:
+                continue
+            events = []
+            try:
+                while True:
+                    events.append(self._midi_queue.get_nowait())
+            except _queue.Empty:
+                pass
+            for event in events:
+                try:
+                    websockets.broadcast(self._clients, json.dumps({'midi': event}))
+                except Exception:
+                    pass
+
+    async def _broadcast_loop(self) -> None:
 
         while True:
-            # Broadcast 10 times a second to keep UI snappy without bogging down the loop
             await asyncio.sleep(0.1)
             
             if not self._clients:
@@ -259,6 +375,19 @@ class WebUI:
             if comp is None:
                 break
 
+            # Start live bridge now if it hasn't been started yet
+            # (must happen inside the running event loop, not before play())
+            live = getattr(comp, '_live_bridge', None)
+            if live is not None and not getattr(live, '_started', False):
+                live.start()
+                # Also inject into REPL namespace now that start() has been called
+                live_server = getattr(comp, '_live_server', None)
+                if live_server is not None and isinstance(live_server._namespace, dict):
+                    live_server._namespace['live'] = live
+
+            # Try to hook midi now if not yet hooked (sequencer may not exist at start time)
+            self._register_midi_hook()
+
             try:
                 state = self._get_state(comp)
                 message = json.dumps(state)
@@ -267,36 +396,35 @@ class WebUI:
                 import traceback
                 logger.error(f"Error broadcasting UI state: {e}\n{traceback.format_exc()}")
 
-    def _get_state (self, comp: typing.Any) -> typing.Dict[str, typing.Any]:
+    def _get_state(self, comp: typing.Any) -> typing.Dict[str, typing.Any]:
 
         state: typing.Dict[str, typing.Any] = {
-            "bpm":             comp.bpm,
-            "section":         None,
-            "chord":           None,
-            "patterns":        [],
-            "signals":         {},
-            "playhead_pulse":  0,
+            "bpm": comp.bpm,
+            "section": None,
+            "chord": None,
+            "patterns": [],
+            "signals": {},
+            "playhead_pulse": 0,
             "pulses_per_beat": 24,
-            "key":             comp.key,
-            "section_bar":     None,
-            "section_bars":    None,
-            "next_section":    None,
-            "global_bar":      0,
-            "global_beat":     0,
-            "link":            self._get_link_state(comp),
+            "key": comp.key,
+            "section_bar": None,
+            "section_bars": None,
+            "next_section": None,
+            "global_bar": 0,
+            "global_beat": 0
         }
         
         if comp.sequencer:
-            state["playhead_pulse"]  = comp.sequencer.pulse_count
+            state["playhead_pulse"] = comp.sequencer.pulse_count
             state["pulses_per_beat"] = comp.sequencer.pulses_per_beat
-            state["global_bar"]      = max(0, comp.sequencer.current_bar) + 1
-            state["global_beat"]     = max(0, comp.sequencer.current_beat) + 1
+            state["global_bar"] = max(0, comp.sequencer.current_bar) + 1
+            state["global_beat"] = max(0, comp.sequencer.current_beat) + 1
         
         if comp.form_state:
             section_info = comp.form_state.get_section_info()
             if section_info:
-                state["section"]      = section_info.name
-                state["section_bar"]  = section_info.bar + 1
+                state["section"] = section_info.name
+                state["section_bar"] = section_info.bar + 1
                 state["section_bars"] = section_info.bars
                 state["next_section"] = section_info.next_section
                 
@@ -305,15 +433,15 @@ class WebUI:
             
         current_bar = state["global_bar"]
         if current_bar != self._last_bar:
-            self._last_bar        = current_bar
+            self._last_bar = current_bar
             self._cached_patterns = []
             for name, pattern in comp.running_patterns.items():
                 pattern_data: typing.Dict[str, typing.Any] = {
-                    "name":          name,
-                    "muted":         getattr(pattern, "_muted", False),
+                    "name": name,
+                    "muted": getattr(pattern, "_muted", False),
                     "length_pulses": int(pattern.length * state["pulses_per_beat"]),
-                    "drum_map":      getattr(pattern, "_drum_note_map", None),
-                    "notes":         []
+                    "drum_map": getattr(pattern, "_drum_note_map", None),
+                    "notes": []
                 }
                 if hasattr(pattern, "steps"):
                     for pulse, step in pattern.steps.items():
@@ -360,9 +488,14 @@ class WebUI:
             if extracted is not None:
                 state["signals"][name] = extracted
 
+        state["link"] = self._get_link_state(comp)
+
+        live = getattr(comp, '_live_bridge', None)
+        state["live"] = live.get_ui_state() if live is not None else {"connected": False, "tracks": [], "scenes": [], "clip_grid": []}
+
         return state
 
-    def stop (self) -> None:
+    def stop(self) -> None:
 
         if self._broadcast_task:
             self._broadcast_task.cancel()

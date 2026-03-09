@@ -189,6 +189,7 @@ class Sequencer:
 		self.pattern_lock = asyncio.Lock()
 		self.reschedule_queue: typing.List[typing.Tuple[int, int, ScheduledPattern]] = []
 		self._reschedule_counter = itertools.count()
+		self.silenced_channels: typing.Set[int] = set()
 		self.events = subsequence.event_emitter.EventEmitter()
 		self.callback_lock = asyncio.Lock()
 		self.callback_queue: typing.List[typing.Tuple[int, int, ScheduledCallback]] = []
@@ -1046,6 +1047,8 @@ class Sequencer:
 
 		async with self.pattern_lock:
 			for scheduled_pattern in to_reschedule:
+				if getattr(scheduled_pattern.pattern, '_deactivated', False):
+					continue
 				counter = next(self._reschedule_counter)
 				heapq.heappush(self.reschedule_queue, (scheduled_pattern.next_reschedule_pulse, counter, scheduled_pattern))
 
@@ -1068,6 +1071,12 @@ class Sequencer:
 				elif event.message_type == 'note_off' or (event.message_type == 'note_on' and event.velocity == 0):
 					if (event.channel, event.note) in self.active_notes:
 						self.active_notes.remove((event.channel, event.note))
+
+				# Skip note_on for silenced channels (e.g. after clear_pattern).
+				# note_off events are always sent to avoid stuck notes.
+				if (event.message_type == 'note_on' and event.velocity > 0
+						and event.channel in self.silenced_channels):
+					continue
 
 				# Send events at or before the current pulse (late events are sent immediately).
 				self._send_midi(event)

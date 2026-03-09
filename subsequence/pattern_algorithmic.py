@@ -997,3 +997,272 @@ class PatternAlgorithmicMixin:
 
 		for pulse in pulses_to_remove:
 			del self._pattern.steps[pulse]
+
+	# ── Chaotic / physics attractors ─────────────────────────────────────
+
+	def lorenz (
+		self,
+		steps: int = 16,
+		pitch_range: typing.Tuple[int, int] = (48, 72),
+		velocity: int = 80,
+		duration: float = 0.25,
+		s: float = 10.0,
+		r: float = 28.0,
+		b: float = 2.667,
+		dt: float = 0.01,
+	) -> None:
+		"""Place notes whose pitches follow the x-axis of a Lorenz attractor.
+
+		Parameters:
+			steps: Number of points to generate (and notes to place).
+			pitch_range: ``(low, high)`` MIDI note numbers to map the attractor into.
+			velocity: Note velocity.
+			duration: Note duration in beats.
+			s, r, b: Lorenz system parameters (sigma, rho, beta).
+			dt: Integration step size. Smaller = slower evolution.
+
+		Example::
+
+			p.lorenz(steps=16, pitch_range=(48, 72))
+		"""
+		import math
+		x, y, z = 0.1, 0.0, 0.0
+		xs: typing.List[float] = []
+		for _ in range(steps):
+			dx = s * (y - x)
+			dy = x * (r - z) - y
+			dz = x * y - b * z
+			x, y, z = x + dt * dx, y + dt * dy, z + dt * dz
+			xs.append(x)
+		lo, hi = min(xs), max(xs)
+		span = hi - lo or 1.0
+		beat_step = self._pattern.length / steps
+		low, high = pitch_range
+		for i, xv in enumerate(xs):
+			pitch = low + int((xv - lo) / span * (high - low))
+			self.note(pitch, beat=i * beat_step, velocity=velocity, duration=duration)
+
+	def logistic (
+		self,
+		steps: int = 16,
+		r: float = 3.9,
+		x0: float = 0.5,
+		pitch_range: typing.Tuple[int, int] = (48, 72),
+		velocity_range: typing.Tuple[int, int] = (60, 120),
+		duration: float = 0.25,
+	) -> None:
+		"""Place notes whose pitches and velocities follow the logistic map.
+
+		Parameters:
+			steps: Number of iterations / notes.
+			r: Growth parameter. < 3 = stable, 3–3.57 = period doubling, > 3.57 = chaos.
+			x0: Initial value (0–1).
+			pitch_range: ``(low, high)`` MIDI note numbers.
+			velocity_range: ``(low, high)`` velocities mapped from the x value.
+			duration: Note duration in beats.
+
+		Example::
+
+			p.logistic(r=3.9)              # chaotic
+			p.logistic(r=3.2)              # period-2 oscillation
+		"""
+		x = x0
+		beat_step = self._pattern.length / steps
+		low_p, high_p = pitch_range
+		low_v, high_v = velocity_range
+		for i in range(steps):
+			x = r * x * (1.0 - x)
+			pitch = low_p + int(x * (high_p - low_p))
+			vel   = low_v + int(x * (high_v - low_v))
+			self.note(pitch, beat=i * beat_step, velocity=vel, duration=duration)
+
+	def gray_scott (
+		self,
+		pitch: typing.Union[int, str] = 60,
+		n: int = 16,
+		f: float = 0.055,
+		k: float = 0.062,
+		iterations: int = 200,
+		velocity_range: typing.Tuple[int, int] = (40, 120),
+		duration: float = 0.25,
+	) -> None:
+		"""Map a 1-D Gray-Scott reaction-diffusion field to note velocities.
+
+		The v-field (activator) develops Turing-like patterns whose intensities
+		are scaled to the velocity range. Useful for organic, non-repeating
+		velocity contours on a fixed pitch.
+
+		Parameters:
+			pitch: MIDI note number or drum name.
+			n: Grid size (= number of steps).
+			f: Feed rate.
+			k: Kill rate.
+			iterations: Simulation steps. More = more developed patterns.
+			velocity_range: ``(low, high)`` MIDI velocities.
+			duration: Note duration in beats.
+
+		Example::
+
+			p.gray_scott(60, f=0.055, k=0.062)
+		"""
+		u = [1.0] * n
+		v = [0.0] * n
+		for i in range(n // 4, n // 4 + 2):
+			v[i] = 1.0
+		for _ in range(iterations):
+			u2 = u[:]
+			for i in range(n):
+				uvv = u[i] * v[i] * v[i]
+				u2[i] = u[i] + 0.2 * (u[(i-1)%n] - 2*u[i] + u[(i+1)%n]) - uvv + f * (1 - u[i])
+				v[i]  = v[i] + 0.1 * (v[(i-1)%n] - 2*v[i] + v[(i+1)%n]) + uvv - (f + k) * v[i]
+			u = u2
+		lo, hi = min(v), max(v)
+		span = hi - lo or 1.0
+		beat_step = self._pattern.length / n
+		low_v, high_v = velocity_range
+		for i, val in enumerate(v):
+			vel = low_v + int((val - lo) / span * (high_v - low_v))
+			self.note(pitch, beat=i * beat_step, velocity=vel, duration=duration)
+
+	def game_of_life (
+		self,
+		pitch: typing.Union[int, str] = 60,
+		cols: int = 16,
+		rows: int = 4,
+		generations: int = 8,
+		row: int = 0,
+		duration: float = 0.25,
+		velocity: int = 80,
+	) -> None:
+		"""Run Conway's Game of Life and trigger notes for live cells in one row.
+
+		Parameters:
+			pitch: MIDI note number or drum name for all hits.
+			cols: Grid width = number of beat slots.
+			rows: Grid height.
+			generations: Steps of evolution before reading the output.
+			row: Which row of the final grid to read (0 = top).
+			duration: Note duration in beats.
+			velocity: Note velocity.
+
+		Example::
+
+			p.game_of_life(60, cols=16, generations=8)
+		"""
+		def _step(g: typing.List[typing.List[int]]) -> typing.List[typing.List[int]]:
+			R, C = len(g), len(g[0])
+			def nb(r: int, c: int) -> int:
+				return sum(
+					g[(r+dr)%R][(c+dc)%C]
+					for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+					if (dr, dc) != (0, 0)
+				)
+			return [
+				[1 if (g[r][c] and nb(r, c) in (2, 3)) or (not g[r][c] and nb(r, c) == 3) else 0
+				 for c in range(C)]
+				for r in range(R)
+			]
+		g = [[self.rng.randint(0, 1) for _ in range(cols)] for _ in range(rows)]
+		for _ in range(generations):
+			g = _step(g)
+		beat_step = self._pattern.length / cols
+		for i, v in enumerate(g[row % len(g)]):
+			if v:
+				self.note(pitch, beat=i * beat_step, velocity=velocity, duration=duration)
+
+	def brownian (
+		self,
+		start: int = 60,
+		steps: int = 16,
+		step_size: int = 2,
+		pitch_range: typing.Tuple[int, int] = (36, 84),
+		velocity: int = 80,
+		duration: float = 0.25,
+	) -> None:
+		"""Place notes following a random-walk (Brownian) melody.
+
+		Parameters:
+			start: Starting MIDI note.
+			steps: Number of steps / notes.
+			step_size: Maximum semitone step per move.
+			pitch_range: ``(low, high)`` clamp for the walk.
+			velocity: Note velocity.
+			duration: Note duration in beats.
+
+		Example::
+
+			p.brownian(start=60, steps=16, step_size=2)
+		"""
+		note = start
+		beat_step = self._pattern.length / steps
+		low, high = pitch_range
+		for i in range(steps):
+			self.note(max(low, min(high, note)), beat=i * beat_step,
+					  velocity=velocity, duration=duration)
+			note += self.rng.randint(-step_size, step_size)
+
+	def golden_ratio (
+		self,
+		pitch: typing.Union[int, str] = 60,
+		count: int = 12,
+		velocity: int = 80,
+		duration: float = 0.25,
+	) -> None:
+		"""Distribute notes using the golden ratio (irrational beat spacing).
+
+		Produces a maximally even, non-repeating hit distribution that never
+		perfectly aligns with any simple subdivision grid.
+
+		Parameters:
+			pitch: MIDI note number or drum name.
+			count: Number of notes to place.
+			velocity: Note velocity.
+			duration: Note duration in beats.
+
+		Example::
+
+			p.golden_ratio(60, count=12)
+		"""
+		phi = (1 + 5 ** 0.5) / 2
+		length = self._pattern.length
+		beats = sorted((i * phi) % length for i in range(count))
+		for b in beats:
+			self.note(pitch, beat=round(b, 4), velocity=velocity, duration=duration)
+
+	def spectral (
+		self,
+		harmonics: typing.Optional[typing.List[float]] = None,
+		steps: int = 16,
+		pitch_range: typing.Tuple[int, int] = (48, 72),
+		velocity: int = 80,
+		duration: float = 0.25,
+	) -> None:
+		"""Map a sum-of-harmonics waveform to pitch contour.
+
+		Parameters:
+			harmonics: Amplitude list ``[fundamental, 2nd, 3rd, ...]``.
+				Defaults to ``[1, 0.5, 0.3, 0.1]``.
+			steps: Number of sample points / notes.
+			pitch_range: ``(low, high)`` MIDI note numbers.
+			velocity: Note velocity.
+			duration: Note duration in beats.
+
+		Example::
+
+			p.spectral([1, 0.5, 0.25])
+			p.spectral([1, 0, 0.5, 0, 0.1])   # odd harmonics only (square-ish)
+		"""
+		import math
+		if harmonics is None:
+			harmonics = [1.0, 0.5, 0.3, 0.1]
+		def wave(t: float) -> float:
+			return sum(a * math.sin(2 * math.pi * (i + 1) * t)
+					   for i, a in enumerate(harmonics))
+		vals = [wave(i / steps) for i in range(steps)]
+		lo, hi = min(vals), max(vals)
+		span = hi - lo or 1.0
+		beat_step = self._pattern.length / steps
+		low, high = pitch_range
+		for i, v in enumerate(vals):
+			pitch = low + int((v - lo) / span * (high - low))
+			self.note(pitch, beat=i * beat_step, velocity=velocity, duration=duration)

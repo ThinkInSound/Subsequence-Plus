@@ -163,6 +163,7 @@ class LiveServer:
 		"""Build the namespace dict with safe builtins that can't block the sequencer."""
 
 		import subsequence
+		import subsequence.constants.instruments.gm_drums as gm_drums
 
 		safe_builtins = {name: getattr(builtins, name) for name in dir(builtins)}
 
@@ -175,6 +176,7 @@ class LiveServer:
 			"__builtins__": safe_builtins,
 			"composition": self._composition,
 			"subsequence": subsequence,
+			"gm_drums": gm_drums,
 		}
 
 

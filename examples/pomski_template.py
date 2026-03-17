@@ -1,6 +1,7 @@
 import subsequence
 import subsequence.constants.instruments.gm_drums as gm_drums
 from live_bridge import LiveBridge
+from api_feeds import DataFeeds
 
 composition = subsequence.Composition(key="C", bpm=120)
 composition.harmony(style="functional_major", cycle_beats=4, gravity=0.8)
@@ -90,4 +91,20 @@ def ch16(p): pass
 
 composition.web_ui()   # http://localhost:8080
 composition.live()     # REPL on port 5555
+
+# ── API feeds ─────────────────────────────────────────────────────────────────
+# `feeds` is available in the REPL and browser command box.
+#
+#   feeds.add("btc", "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+#             interval=10, extract=lambda r: float(r["data"]["amount"]))
+#   feeds.stop("btc")
+#   feeds          # show active feeds and current values
+#
+# Read values in patterns:
+#   price = composition.data.get("feed_btc", 0)
+# ─────────────────────────────────────────────────────────────────────────────
+feeds = DataFeeds(composition)
+_orig_build = composition._live_server._build_namespace
+composition._live_server._build_namespace = lambda: {**_orig_build(), "feeds": feeds}
+
 composition.play()     # always last

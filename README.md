@@ -50,7 +50,7 @@ pip install music21             # Exotic scale support (p.quantize_m21)
 ```python
 cd [POMSKI repo examples folder]
 python pomski_template.py
-Choose your MIDI device
+# Choose your MIDI device
 ```
 Then open **http://localhost:8080** in any browser.
 ---

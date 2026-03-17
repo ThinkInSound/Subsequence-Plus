@@ -6,6 +6,8 @@ Write music as Python code. Change it while it's playing.
 
 POMSKI is a MIDI sequencer you control from a Python script — or from a live coding environment where you can rewrite patterns, shift harmonies, and retune the tempo mid-performance without ever stopping playback.
 
+![POMSKI UI](images/pomski.png)
+
 ```python
 import subsequence
 import subsequence.constants.instruments.gm_drums as gm_drums

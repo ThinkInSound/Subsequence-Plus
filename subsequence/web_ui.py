@@ -2,6 +2,8 @@ import asyncio
 import http.server
 import json
 import logging
+import mido
+import mido.backends.rtmidi  # ensure PyInstaller bundles the rtmidi backend
 import os
 import queue
 import socketserver
@@ -163,7 +165,6 @@ class WebUI:
                         seq = getattr(comp, 'sequencer', None)
                         if seq and device:
                             try:
-                                import mido
                                 seq.midi_out = mido.open_output(device)
                                 seq.output_device_name = device
                                 await websocket.send(json.dumps({"midi_output_set": device}))
@@ -297,7 +298,6 @@ class WebUI:
 
     def _get_midi_devices(self) -> typing.Dict[str, typing.List[str]]:
         try:
-            import mido
             return {
                 "inputs":  mido.get_input_names(),
                 "outputs": mido.get_output_names(),

@@ -52,7 +52,9 @@ cd [POMSKI repo examples folder]
 python pomski_template.py
 # Choose your MIDI device
 ```
+
 Then open **http://localhost:8080** in any browser.
+
 ---
 
 ## The basics

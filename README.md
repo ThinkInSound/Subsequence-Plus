@@ -45,7 +45,14 @@ pip install aalink              # Ableton Link tempo sync
 pip install mido python-rtmidi  # MIDI device selection in the Web UI
 pip install music21             # Exotic scale support (p.quantize_m21)
 ```
+### Opening POMSKI
 
+```python
+cd [POMSKI repo examples folder]
+python pomski_template.py
+Choose your MIDI device
+```
+Then open **http://localhost:8080** in any browser.
 ---
 
 ## The basics
@@ -124,14 +131,6 @@ def bass(p):
 ## Web UI
 
 The browser dashboard gives you a visual overview of everything happening in your composition and a built-in code editor for sending live changes.
-
-```python
-cd [POMSKI repo examples folder]
-python pomski_template.py
-Choose your MIDI device
-```
-
-Then open **http://localhost:8080** in any browser.
 
 ### What's on screen
 

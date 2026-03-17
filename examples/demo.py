@@ -11,7 +11,6 @@ can be performed in realtime now with composition.live active
 
 import subsequence
 import subsequence.constants.instruments.gm_drums as gm_drums
-from aalink import Link
 
 DRUMS_CHANNEL = 9
 BASS_CHANNEL  = 5

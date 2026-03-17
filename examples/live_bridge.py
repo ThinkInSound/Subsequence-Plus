@@ -100,6 +100,7 @@ class LiveBridge:
 
     def play(self)           -> None: self._send("/live/song/start_playing")
     def stop_transport(self) -> None: self._send("/live/song/stop_playing")
+    def set_tempo(self, bpm: float) -> None: self._send("/live/song/set/tempo", float(bpm))
 
     # ─── clips ────────────────────────────────────────────────────────────────
 

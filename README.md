@@ -9,11 +9,6 @@ POMSKI is a MIDI sequencer you control with Python; it's a live coding environme
 <img width="1980" height="1315" alt="pomski" src="https://github.com/user-attachments/assets/e6d2a373-c6fc-4682-9a99-62bbd8ff75cb" />
 
 ```python
-import subsequence
-import subsequence.constants.instruments.gm_drums as gm_drums
-
-composition = subsequence.Composition(key="C", bpm=120)
-
 @composition.pattern(channel=0, length=4)
 def bass(p):
     p.note(36, beat=0, velocity=100, duration=0.5)

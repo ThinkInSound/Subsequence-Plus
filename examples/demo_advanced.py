@@ -109,8 +109,36 @@ async def main () -> None:
 	bass  = BassPattern(harmonic_state)
 	arp   = ArpPattern(harmonic_state)
 
-	await subsequence.composition.schedule_patterns(seq, [drums, bass, arp])
+	patterns = [drums, bass, arp]
+	await subsequence.composition.schedule_patterns(seq, patterns)
+
+	# Web UI — build a minimal shim so WebUI has what it needs
+	class DirectAPIShim:
+		def __init__(self):
+			self.bpm        = seq.current_bpm
+			self.key        = "E"
+			self.sequencer  = seq
+			self.harmonic_state = harmonic_state
+			self.form_state = None
+			self.conductor  = None
+			self.data       = {}
+			self.running_patterns = {
+				"drums": drums,
+				"bass":  bass,
+				"arp":   arp,
+			}
+		def update(self):
+			self.bpm = seq.current_bpm
+
+	shim = DirectAPIShim()
+
+	from subsequence.web_ui import WebUI
+	web_ui = WebUI(shim)
+	web_ui.start()
+
 	await subsequence.composition.run_until_stopped(seq)
+
+	web_ui.stop()
 
 
 if __name__ == "__main__":

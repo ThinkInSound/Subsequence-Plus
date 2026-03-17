@@ -6,8 +6,6 @@ Write music as Python code. Change it while it's playing.
 
 POMSKI is a MIDI sequencer you control with Python; it's a live coding environment where you can rewrite patterns, shift harmonies, and retune the tempo mid-performance without ever stopping playback. POMSKI is also deeply integrated with Ableton Live, with AbletonOSC, Ableton Link, and ClyphX control natively built-in. 
 
-<img width="1980" height="1315" alt="pomski" src="https://github.com/user-attachments/assets/e6d2a373-c6fc-4682-9a99-62bbd8ff75cb" />
-
 ```python
 @composition.pattern(channel=0, length=4)
 def bass(p):
@@ -60,19 +58,17 @@ def kick(p):
     p.note(36, beat=0, velocity=110, duration=0.1)
 ```
 
-`length` sets the loop length in beats. Inside the pattern, `p.bar` tells you the current global bar and `p.cycle` tells you how many times this pattern has looped — use them to vary things over time.
+`length` sets the loop length in beats.
 
 ### MIDI channels
 
-POMSKI channels are **0-indexed**: `channel=0` = MIDI channel 1, `channel=9` = MIDI channel 10 (drums). The template assigns slots `ch1`–`ch16` to channels `0`–`15` respectively.
+POMSKI channels are **0-indexed**: `channel=0` = MIDI channel 1, `channel=9` = MIDI channel 10 (usually drums). The template assigns slots `ch1`–`ch16` to channels `0`–`15` respectively.
 
 ### Drums
 
 Use `drum_note_map=gm_drums.GM_DRUM_MAP` on the decorator to address drums by name. Channel 9 is the standard GM drums channel.
 
 ```python
-import subsequence.constants.instruments.gm_drums as gm_drums
-
 @composition.pattern(channel=9, length=4, drum_note_map=gm_drums.GM_DRUM_MAP)
 def drums(p):
     p.hit_steps("kick_1",       [0, 3, 8, 12], velocity=110)
@@ -106,14 +102,7 @@ composition.form([
 
 ## Live coding
 
-The real power of POMSKI is changing things while they play. Start the live coding server before `play()`:
-
-```python
-composition.live()     # starts a server on port 5555
-composition.play()
-```
-
-Then from the **Web UI** (or any text editor that can open a socket) you can type Python and hit send — your changes take effect on the next bar:
+The real power of POMSKI is changing things while they play. From the **Web UI** (or any text editor that can open a socket) you can type Pythonand hit send — your changes take effect on the next bar:
 
 ```python
 # change the tempo
@@ -134,10 +123,12 @@ def bass(p):
 
 The browser dashboard gives you a visual overview of everything happening in your composition and a built-in code editor for sending live changes.
 
+<img width="1980" height="1315" alt="pomski" src="https://github.com/user-attachments/assets/e6d2a373-c6fc-4682-9a99-62bbd8ff75cb" />
+
 ```python
-composition.web_ui()
-composition.live()
-composition.play()
+cd [POMSKI repo examples folder]
+python pomski_template.py
+Choose your MIDI device
 ```
 
 Then open **http://localhost:8080** in any browser.
@@ -151,15 +142,17 @@ Then open **http://localhost:8080** in any browser.
 - Link pill — shows Ableton Link status; click to toggle sync on/off
 - Section progress bar
 
+**Bottom Bar** - clear the log, clear the editor window, record a MIDI session to file (slider bar controls for how many bars POMSKI will record)
+
 **Log tab** — everything you send to the REPL and every response comes back here in colour. The quick command input at the bottom accepts Python one-liners, or prefix with `cx:` to send a ClyphX Pro action instead (e.g. `cx: 1/MUTE ON`).
 
 **Signals tab** — live scrolling waveforms for any LFOs or values you've written to `composition.data`. Each signal has a ✕ button to remove it. Useful for checking that modulations are doing what you expect.
 
-**Patterns tab** — every running pattern listed with a mute button, a clear (×) button, and a small 16-step grid showing which steps have notes and how loud they are.
+**Patterns tab** — every running pattern listed with a mute button, a clear (×) button, and a small 16-step grid showing which steps have notes.
 
-**Refs tab** — copy-ready code examples for every algorithmic method, plus a button to open the full tutorial in a new window.
+**Refs tab** — copy-ready code examples for every algorithmic method, API calling, plus a button to open the full tutorial in a new window.
 
-**Prefs tab** — turn Ableton Link on or off, select your MIDI input/output device, record a MIDI session to file, and monitor AbletonOSC connection status.
+**Prefs tab** — turn Ableton Link on or off, select your MIDI input/output device, and monitor AbletonOSC connection status.
 
 ### Keyboard shortcuts
 
@@ -180,7 +173,7 @@ Link keeps POMSKI's tempo locked to Ableton Live — and anything else on your n
 pip install aalink
 ```
 
-That's it. If aalink is installed POMSKI will connect to Link automatically when you call `play()`. You'll see the peer count in the Link pill in the Web UI.
+That's it. If aalink is installed POMSKI will connect to Link automatically. You'll see the peer count in the Link pill in the Web UI.
 
 - Change tempo in Ableton → POMSKI follows
 - Call `composition.set_bpm(140)` → Ableton follows
@@ -195,23 +188,8 @@ POMSKI can communicate directly with Ableton Live via [AbletonOSC](https://githu
 ### Setup
 
 1. Install AbletonOSC as a remote script in Ableton (see its README)
-2. Add `LiveBridge` to your script:
 
-```python
-from live_bridge import LiveBridge
-
-composition = subsequence.Composition(key="C", bpm=120)
-live = LiveBridge(composition)
-composition._live_bridge = live   # exposes Live state to the web UI
-
-# ... your patterns ...
-
-composition.web_ui()
-composition.live()
-composition.play()
-```
-
-The bridge connects automatically once `play()` starts. Connection status and track count are shown in the Prefs tab.
+The bridge connects automatically once POMSKI starts. Connection status and track count are shown in the Prefs tab.
 
 ### Controlling Live from Python
 

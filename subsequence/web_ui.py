@@ -3,6 +3,7 @@ import http.server
 import json
 import logging
 import os
+import queue
 import socketserver
 import threading
 import typing
@@ -35,8 +36,9 @@ class WebUI:
         self._clients: typing.Set[websockets.asyncio.server.ServerConnection] = set()
         self._last_bar: int = -1
         self._cached_patterns: typing.List[typing.Dict[str, typing.Any]] = []
-        import queue
         self._midi_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._data_snap: typing.FrozenSet = frozenset()
+        self._data_signals_cache: typing.Dict[str, float] = {}
 
     def start (self) -> None:
 
@@ -227,8 +229,20 @@ class WebUI:
                         if live and live.connected:
                             live.track_stop(cmd.get('track', 0))
 
+                    elif action == 'clyphx':
+                        live = getattr(comp, '_live_bridge', None)
+                        script = cmd.get('script', '')
+                        if not script:
+                            await websocket.send(json.dumps({'log': 'ClyphX: empty script', 'level': 'err'}))
+                        elif live is None:
+                            await websocket.send(json.dumps({'log': 'ClyphX: no live bridge attached', 'level': 'err'}))
+                        elif not live.connected:
+                            await websocket.send(json.dumps({'log': 'ClyphX: AbletonOSC not connected', 'level': 'err'}))
+                        else:
+                            live.clyphx(script)
+
                 except Exception:
-                    pass
+                    logger.exception("WebUI: unhandled error processing WebSocket command")
 
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -295,7 +309,6 @@ class WebUI:
         try:
             self._ws_server = await websockets.asyncio.server.serve(self._handle_client, "0.0.0.0", self.ws_port)
             asyncio.create_task(self._broadcast_loop())
-            asyncio.create_task(self._midi_broadcast_loop())
         except Exception as e:
             logger.error(f"WebSocket server error: {e}")
 
@@ -329,24 +342,6 @@ class WebUI:
         seq._send_midi = _hooked_send
         seq._pomski_hooked = True
 
-    async def _midi_broadcast_loop(self) -> None:
-        import queue as _queue
-        while True:
-            await asyncio.sleep(0.001)
-            if not self._clients:
-                continue
-            events = []
-            try:
-                while True:
-                    events.append(self._midi_queue.get_nowait())
-            except _queue.Empty:
-                pass
-            for event in events:
-                try:
-                    websockets.broadcast(self._clients, json.dumps({'midi': event}))
-                except Exception:
-                    pass
-
     async def _broadcast_loop(self) -> None:
 
         while True:
@@ -379,6 +374,21 @@ class WebUI:
             except Exception as e:
                 import traceback
                 logger.error(f"Error broadcasting UI state: {e}\n{traceback.format_exc()}")
+
+            # Drain MIDI event queue and forward to clients (consolidated from
+            # the former 1ms polling loop — 100ms latency is imperceptible for
+            # a visual activity monitor).
+            midi_events: typing.List[typing.Dict] = []
+            try:
+                while True:
+                    midi_events.append(self._midi_queue.get_nowait())
+            except queue.Empty:
+                pass
+            for event in midi_events:
+                try:
+                    websockets.broadcast(self._clients, json.dumps({'midi': event}))
+                except Exception:
+                    pass
 
     def _get_state(self, comp: typing.Any) -> typing.Dict[str, typing.Any]:
 
@@ -459,18 +469,38 @@ class WebUI:
                 return float(val)
             return None
 
-        if comp.conductor:
-            beat_time = comp.sequencer.pulse_count / comp.sequencer.pulses_per_beat if comp.sequencer else 0.0
+        # Conductor LFOs are time-varying — always recompute.
+        if comp.conductor and comp.conductor._signals:
+            beat_time = (comp.sequencer.pulse_count / comp.sequencer.pulses_per_beat
+                         if comp.sequencer else 0.0)
             for name, signal in comp.conductor._signals.items():
                 try:
                     state["signals"][name] = float(signal.value_at(beat_time))
                 except Exception:
                     pass
-                    
+
+        # comp.data: snapshot primitive values and only re-extract when they
+        # change.  Non-primitive entries (objects with .current / .value) are
+        # re-extracted every tick because their internal state may vary even
+        # when their identity is stable.
+        snap = frozenset(
+            (k, v) for k, v in comp.data.items() if type(v) in (int, float, bool)
+        )
+        if snap != self._data_snap:
+            self._data_snap = snap
+            new_cache: typing.Dict[str, float] = {}
+            for name, val in comp.data.items():
+                if type(val) in (int, float, bool):
+                    new_cache[name] = float(val)
+            self._data_signals_cache = new_cache
+        state["signals"].update(self._data_signals_cache)
+
+        # Non-primitive extractable values in comp.data (e.g. feed objects).
         for name, val in comp.data.items():
-            extracted = _extract_val(val)
-            if extracted is not None:
-                state["signals"][name] = extracted
+            if type(val) not in (int, float, bool):
+                extracted = _extract_val(val)
+                if extracted is not None:
+                    state["signals"][name] = extracted
 
         state["link"] = self._get_link_state(comp)
 

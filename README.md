@@ -2,7 +2,8 @@
 
 Write music as Python code. Change it while it's playing.
 
-<img width="1980" height="1315" alt="pomski" src="https://github.com/user-attachments/assets/e6d2a373-c6fc-4682-9a99-62bbd8ff75cb" />
+<img width="1920" height="920" alt="pomski sequencer when running" src="https://github.com/user-attachments/assets/3a2b2fbe-bb28-48f4-bd0f-c31990f8181c" />
+
 
 **POMSKI** — *Python Only MIDI Sequencer Keyboard Interface* — named after Qina, a very good Pomsky dog.
 

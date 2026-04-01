@@ -844,7 +844,9 @@ def ch1(p):
 const WS_PORT=8765, WS_HOST=window.location.hostname||'localhost', HIST_LEN=180;
 let ws=null, bpm=120, lastBeat=-1;
 let cmdHist=[], cmdIdx=-1;
-let bufs=['','',''], tabNames=['buffer 1','buffer 2','buffer 3'], activeTab=0;
+try{const _s=JSON.parse(localStorage.getItem('pomski_bufs')||'null');if(_s&&Array.isArray(_s.bufs)&&_s.bufs.length)window._initBufs=_s;}catch(_e){}
+const _ib=window._initBufs||{};
+let bufs=_ib.bufs||['','',''], tabNames=_ib.names||['buffer 1','buffer 2','buffer 3'], activeTab=_ib.tab||0;
 let sigHist={}, sigCvs={}, sigRAF={}, patCol={}, colIdx=0, linkAvail=false;
 let lastRawBar=0, barOffset=0;
 let isRecording=false, recCountdown=null;
@@ -854,6 +856,8 @@ let webMidiOutput=null, webMidiActive=false;
 const COLORS=['#ff5c8a','#9d6fff','#3fc8a0','#ff9940','#5ea8ff','#f5c842'];
 
 // ── BUFFER TABS ──────────────────────────────────────────────────────────────
+function saveBuffers(){bufs[activeTab]=document.getElementById('codeEditor').value;try{localStorage.setItem('pomski_bufs',JSON.stringify({bufs,names:tabNames,tab:activeTab}));}catch(e){}}
+window.addEventListener('beforeunload',saveBuffers);
 function renderTabs(){
   const bar=document.getElementById('tabBar'),add=document.getElementById('tabAdd');
   bar.querySelectorAll('.tab').forEach(t=>t.remove());
@@ -864,7 +868,7 @@ function renderTabs(){
     bar.insertBefore(d,add);
   });
 }
-function switchTab(i){bufs[activeTab]=document.getElementById('codeEditor').value;activeTab=i;document.getElementById('codeEditor').value=bufs[i]||'';document.querySelectorAll('#tabBar .tab').forEach((t,j)=>t.classList.toggle('active',j===i));}
+function switchTab(i){bufs[activeTab]=document.getElementById('codeEditor').value;activeTab=i;document.getElementById('codeEditor').value=bufs[i]||'';document.querySelectorAll('#tabBar .tab').forEach((t,j)=>t.classList.toggle('active',j===i));saveBuffers();}
 function removeTab(i){
   if(bufs.length<=1)return;
   bufs[activeTab]=document.getElementById('codeEditor').value;
@@ -872,7 +876,7 @@ function removeTab(i){
   if(activeTab>=bufs.length)activeTab=bufs.length-1;
   else if(activeTab>i)activeTab--;
   document.getElementById('codeEditor').value=bufs[activeTab]||'';
-  renderTabs();
+  renderTabs();saveBuffers();
 }
 document.getElementById('tabBar').addEventListener('click',e=>{
   if(e.target.closest('.tab-close')){const t=e.target.closest('.tab');if(t)removeTab(+t.dataset.idx);return;}
@@ -884,13 +888,13 @@ document.getElementById('tabBar').addEventListener('dblclick',e=>{
   const inp=document.createElement('input');inp.className='tab-rename';inp.value=tabNames[i];
   inp.style.width=Math.max(50,label.offsetWidth)+'px';
   label.replaceWith(inp);inp.focus();inp.select();
-  function commit(){tabNames[i]=inp.value.trim()||tabNames[i];renderTabs();}
+  function commit(){tabNames[i]=inp.value.trim()||tabNames[i];renderTabs();saveBuffers();}
   inp.addEventListener('blur',commit);
   inp.addEventListener('keydown',e2=>{if(e2.key==='Enter'){e2.preventDefault();inp.blur();}if(e2.key==='Escape'){tabNames[i]=tabNames[i];renderTabs();}});
 });
 document.getElementById('tabAdd').addEventListener('click',()=>{
   bufs[activeTab]=document.getElementById('codeEditor').value;
-  bufs.push('');tabNames.push('buffer '+(bufs.length));renderTabs();switchTab(bufs.length-1);
+  bufs.push('');tabNames.push('buffer '+(bufs.length));renderTabs();switchTab(bufs.length-1);saveBuffers();
 });
 renderTabs();
 
@@ -1117,6 +1121,7 @@ document.getElementById('codeEditor').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&e.shiftKey&&e.ctrlKey){e.preventDefault();evalCode();}
   if(e.key==='Tab'){e.preventDefault();const s=e.target,v=s.value,pos=s.selectionStart;s.value=v.slice(0,pos)+'    '+v.slice(s.selectionEnd);s.selectionStart=s.selectionEnd=pos+4;}
 });
+{let _saveT=0;document.getElementById('codeEditor').addEventListener('input',()=>{clearTimeout(_saveT);_saveT=setTimeout(saveBuffers,1500);});}
 
 // ── QUICK INPUT ───────────────────────────────────────────────────────────────
 function sendQuick(){

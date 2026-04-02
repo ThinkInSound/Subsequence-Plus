@@ -52,7 +52,8 @@ class LiveServer:
 		self._server = await asyncio.start_server(
 			self._handle_connection,
 			host = "127.0.0.1",
-			port = self._port
+			port = self._port,
+			reuse_address = True,
 		)
 
 		logger.info(f"Live server listening on 127.0.0.1:{self._port}")
@@ -141,7 +142,13 @@ class LiveServer:
 		# Try as an expression first (returns a value).
 		try:
 			result = eval(compile(code, "<live>", "eval"), self._namespace)
-			return repr(result) if result is not None else "OK"
+			if result is None:
+				return "OK"
+			try:
+				from rich.pretty import pretty_repr
+				return pretty_repr(result, max_string=400, max_length=30)
+			except Exception:
+				return repr(result)
 		except SyntaxError:
 			pass
 		except SystemExit:

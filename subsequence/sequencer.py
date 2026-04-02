@@ -511,7 +511,11 @@ class Sequencer:
 			raise ValueError("Reschedule lookahead cannot be negative")
 
 		if lookahead_beats > length_beats:
-			raise ValueError("Reschedule lookahead cannot exceed schedule length")
+			logger.warning(
+				"Reschedule lookahead (%.3f beats) exceeds pattern length (%.3f beats) — clamping",
+				lookahead_beats, length_beats
+			)
+			lookahead_beats = length_beats / 2.0
 
 		length_pulses = int(length_beats * self.pulses_per_beat)
 		lookahead_pulses = int(lookahead_beats * self.pulses_per_beat)
@@ -606,7 +610,12 @@ class Sequencer:
 		Schedule a pattern and register it for rescheduling each cycle.
 		"""
 
-		length_pulses, lookahead_pulses = self._get_pattern_timing(pattern)
+		try:
+			length_pulses, lookahead_pulses = self._get_pattern_timing(pattern)
+		except Exception as exc:
+			pat_name = getattr(pattern, 'name', '?')
+			logger.warning(f"Pattern '{pat_name}' could not be scheduled: {exc}")
+			return
 
 		await self.schedule_pattern(pattern, start_pulse)
 
@@ -1048,16 +1057,27 @@ class Sequencer:
 
 		for scheduled_pattern in to_reschedule:
 
-			scheduled_pattern.pattern.on_reschedule()
+			try:
+				scheduled_pattern.pattern.on_reschedule()
 
-			# Re-read length in case on_reschedule() changed it (e.g. via set_length).
-			new_length_pulses, new_lookahead_pulses = self._get_pattern_timing(scheduled_pattern.pattern)
-			scheduled_pattern.length_pulses = new_length_pulses
-			scheduled_pattern.lookahead_pulses = new_lookahead_pulses
-			scheduled_pattern.next_reschedule_pulse = scheduled_pattern.cycle_start_pulse + new_length_pulses - new_lookahead_pulses
+				# Re-read length in case on_reschedule() changed it (e.g. via set_length).
+				new_length_pulses, new_lookahead_pulses = self._get_pattern_timing(scheduled_pattern.pattern)
+				scheduled_pattern.length_pulses = new_length_pulses
+				scheduled_pattern.lookahead_pulses = new_lookahead_pulses
+				scheduled_pattern.next_reschedule_pulse = scheduled_pattern.cycle_start_pulse + new_length_pulses - new_lookahead_pulses
 
-			await self.schedule_pattern(scheduled_pattern.pattern, scheduled_pattern.cycle_start_pulse)
-			_fire_and_log(self.events.emit_async("pattern_reschedule", scheduled_pattern.pattern, scheduled_pattern.cycle_start_pulse))
+				await self.schedule_pattern(scheduled_pattern.pattern, scheduled_pattern.cycle_start_pulse)
+				_fire_and_log(self.events.emit_async("pattern_reschedule", scheduled_pattern.pattern, scheduled_pattern.cycle_start_pulse))
+			except Exception as exc:
+				pat_name = getattr(scheduled_pattern.pattern, 'name', '?')
+				logger.warning(f"Pattern '{pat_name}' reschedule error: {exc}")
+				# Re-queue with old timing so the slot stays alive and recovers
+				# when the user hot-swaps a corrected pattern.
+				scheduled_pattern.next_reschedule_pulse = (
+					scheduled_pattern.cycle_start_pulse
+					+ scheduled_pattern.length_pulses
+					- scheduled_pattern.lookahead_pulses
+				)
 
 		async with self.pattern_lock:
 			for scheduled_pattern in to_reschedule:

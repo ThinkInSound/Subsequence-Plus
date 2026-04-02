@@ -1270,13 +1270,21 @@ class PatternAlgorithmicMixin:
 
 	# ── Music21 integration ───────────────────────────────────────────────────
 
-	def quantize_m21 (self, key: str, scale_name: str = "MajorScale") -> None:
+	def quantize_m21 (
+		self,
+		key: str,
+		scale_name: str = "MajorScale",
+		scala_name: typing.Optional[str] = None,
+	) -> None:
 
 		"""Snap all notes to the nearest pitch in any Music21 scale type.
 
 		Extends ``p.quantize()`` with access to Music21's full scale library,
 		including exotic and non-Western scales not available in the built-in
 		mode map.
+
+		When ``scala_name`` is provided it takes precedence over ``scale_name``
+		and loads a tuning from music21's bundled Scala archive (3,935 files).
 
 		Requires ``music21`` to be installed (``pip install music21``).
 
@@ -1293,40 +1301,149 @@ class PatternAlgorithmicMixin:
 				- ``"RagAsawari"``, ``"RagMarwa"`` (Indian ragas)
 				- ``"SieveScale"`` (Xenakis-style)
 
-		Example:
+			scala_name: Filename from the Scala archive, e.g. ``"mbira_banda.scl"``.
+				When given, ``scale_name`` is ignored.  The archive ships with 3,935
+				tuning files covering historical temperaments, world music scales,
+				microtonal systems, and more.
+
+		Examples:
 			```python
-			@composition.pattern(channel=0, length=4)
-			def melody (p):
-			    p.brownian(start=60, steps=16)
-			    p.quantize_m21("D", "RagAsawari")
+			p.quantize_m21("D", "RagAsawari")
+			p.quantize_m21("C", scala_name="mbira_banda.scl")
+			p.quantize_m21("C", scala_name="pyth_12.scl")
 			```
 		"""
 
 		try:
 			import music21.scale as m21scale
 			import music21.pitch as m21pitch
-		except ImportError:
+		except Exception as _e:
 			raise ImportError(
-				"music21 is required for quantize_m21(). "
-				"Install it with: pip install music21"
-			)
+				f"music21 is required for quantize_m21(). "
+				f"Install it with: pip install music21\n"
+				f"({type(_e).__name__}: {_e})"
+			) from _e
 
-		scale_cls = getattr(m21scale, scale_name, None)
-		if scale_cls is None:
-			raise ValueError(
-				f"Unknown Music21 scale: '{scale_name}'. "
-				"Check music21.scale module for valid class names."
-			)
+		if scala_name is not None:
+			sc = m21scale.ScalaScale(key, scala_name)
+		else:
+			scale_cls = getattr(m21scale, scale_name, None)
+			if scale_cls is None:
+				raise ValueError(
+					f"Unknown Music21 scale: '{scale_name}'. "
+					"Check music21.scale module for valid class names."
+				)
+			tonic = m21pitch.Pitch(key)
+			sc = scale_cls(tonic)
 
-		tonic = m21pitch.Pitch(key)
-		sc = scale_cls(tonic)
-		# Get one octave of pitches and extract pitch classes (0–11)
+		# Get one octave of pitches and extract pitch classes (0–11).
+		# For Scala scales we derive pitch class from ps (exact semitone position)
+		# so that microtonal degrees still resolve to a unique chromatic bucket.
 		pitches = sc.getPitches(f"{key}1", f"{key}2")
-		scale_pcs = sorted(set(p.pitchClass for p in pitches))
+		scale_pcs = sorted(set(round(p.ps) % 12 for p in pitches))
 
 		for step in self._pattern.steps.values():
 			for note in step.notes:
 				note.pitch = subsequence.intervals.quantize_pitch(note.pitch, scale_pcs)
+
+	def microtuning (
+		self,
+		key: str,
+		scala_name: str,
+		bend_range: float = 2.0,
+	) -> None:
+
+		"""Apply microtonal tuning from a Scala archive file using MIDI pitch bend.
+
+		Loads a tuning from music21's Scala archive, snaps each note to the
+		nearest scale degree (like ``quantize_m21``), then inserts a pitch bend
+		event at each note onset that corrects the pitch by the exact cent
+		deviation of that scale degree.  A reset bend (0.0) is inserted at the
+		following note or at the pattern end.
+
+		This allows notes to be played at pitches that lie between MIDI semitones
+		— essential for mbira tunings, just intonation, historical temperaments,
+		and other non-12-TET systems.
+
+		Parameters:
+			key: Root note name (e.g. ``"C"``, ``"F#"``, ``"Bb"``).
+			scala_name: Filename from the Scala archive, e.g. ``"mbira_banda.scl"``.
+				music21 ships with 3,935 ``.scl`` files.
+			bend_range: Instrument pitch wheel range in semitones (default 2.0).
+				Must match the receiving synth's pitch bend range setting.  Set to
+				12 or 24 if your synth is configured for a wider range.
+
+		Limitations:
+			Pitch bend is per-channel.  Simultaneously playing notes on the same
+			channel share one bend value, so microtuning works best on monophonic
+			lines or on instruments where all simultaneous notes share the same
+			tuning correction.
+
+		Example:
+			```python
+			@pat(0, 4)
+			def ch1(p):
+			    p.brownian(start=60, steps=16)
+			    p.microtuning("C", "mbira_banda.scl")
+
+			@pat(1, 4)
+			def ch2(p):
+			    p.euclidean(60, pulses=5)
+			    p.microtuning("C", "pyth_12.scl", bend_range=12)
+			```
+		"""
+
+		try:
+			import music21.scale as m21scale
+		except Exception as _e:
+			raise ImportError(
+				f"music21 is required for microtuning(). "
+				f"Install it with: pip install music21\n"
+				f"({type(_e).__name__}: {_e})"
+			) from _e
+
+		sc = m21scale.ScalaScale(key, scala_name)
+		# Sample one octave — scales are octave-repeating, so one octave gives
+		# the complete pitch-class set with consistent cent offsets.
+		pitches = sc.getPitches(f"{key}1", f"{key}2")
+
+		# Build a lookup: pitch_class (0–11) → cent offset from nearest semitone.
+		pc_cents: typing.Dict[int, float] = {}
+		for p in pitches:
+			nearest = round(p.ps)
+			cents = (p.ps - nearest) * 100
+			pc = nearest % 12
+			if pc not in pc_cents:
+				pc_cents[pc] = cents
+
+		# Build a sorted list of (pulse, note) pairs so we can insert resets.
+		note_pulses = sorted(
+			(pulse, note)
+			for pulse, step in self._pattern.steps.items()
+			for note in step.notes
+		)
+
+		QPP = subsequence.constants.MIDI_QUARTER_NOTE  # pulses per quarter note
+
+		for idx, (pulse, note) in enumerate(note_pulses):
+			# Snap to nearest scale degree (same as quantize_m21).
+			pc = note.pitch % 12
+			if pc not in pc_cents:
+				# Find nearest pc that is in the scale.
+				pc = min(pc_cents, key=lambda x: min(abs(x - pc), 12 - abs(x - pc)))
+				note.pitch = note.pitch - (note.pitch % 12) + pc
+			cents = pc_cents[pc]
+			bend_value = cents / (bend_range * 100)
+			beat = pulse / QPP
+			self.pitch_bend(bend_value, beat=beat)
+
+			# Reset bend at the next note onset (or end of pattern).
+			if idx + 1 < len(note_pulses):
+				next_pulse = note_pulses[idx + 1][0]
+			else:
+				next_pulse = int(self._pattern.length * QPP)
+			reset_beat = next_pulse / QPP
+			self.pitch_bend(0.0, beat=reset_beat)
 
 	def from_midi (
 		self,

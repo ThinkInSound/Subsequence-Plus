@@ -1579,6 +1579,18 @@ class Composition:
             During live sessions, hot-swap an existing pattern's builder instead.
             """
 
+            # Validate beat_length early so a bad `unit` value doesn't corrupt a
+            # running slot.  The sequencer requires length > reschedule_lookahead.
+            if beat_length <= 0 or (self._is_live and beat_length < reschedule_lookahead):
+                msg = (
+                    f"[ERROR] Pattern '{fn.__name__}': length {beat_length:.4f} beats is too short "
+                    f"(must be > reschedule_lookahead={reschedule_lookahead} beats). "
+                    f"Check your unit= value — minimum useful unit is 0.25 (16th note)."
+                )
+                print(msg, flush=True)
+                logger.warning(msg)
+                return fn  # abort — do not corrupt the running slot
+
             # Hot-swap: if we're live and a pattern with this name exists, replace its builder.
             # Also match by builder fn name to handle auto-assigned slots (e.g. euclidean → ch1).
             if self._is_live:
@@ -1824,36 +1836,44 @@ class Composition:
         # Store the running loop for use by the live decorator.
         self._main_loop = asyncio.get_running_loop()
 
-        # Ableton Link — run in a daemon thread to avoid ProactorEventLoop crash on Windows.
-        # aalink is optional; silently skip if not installed.
-        self._link_thread_running = False
-        try:
-            import aalink as _aalink
-            import threading as _threading
-            import time as _time
+        # Ableton Link — skip if already initialised externally (e.g. pre-asyncio
+        # init in pomski_template.py which avoids a crash in frozen executables).
+        if not getattr(self, '_link_thread_running', False):
+            self._link_thread_running = False
+            try:
+                import aalink as _aalink
+                import threading as _threading
+                import time as _time
 
-            self._link = _aalink.Link(self.bpm, self._main_loop)
-            self._link.enabled = True
-            self._link_thread_running = True
+                # Create a private SelectorEventLoop for aalink callbacks.
+                _link_loop = asyncio.new_event_loop()
+                _link_loop_thread = _threading.Thread(
+                    target=_link_loop.run_forever, daemon=True, name="aalink-loop"
+                )
+                _link_loop_thread.start()
 
-            def _link_poll() -> None:
-                _last = self.bpm
-                while self._link_thread_running:
-                    try:
-                        tempo = self._link.tempo
-                        if abs(tempo - _last) > 0.05:
-                            _last = tempo
-                            self._sequencer.set_bpm(tempo)
-                            if not self._clock_follow:
-                                self.bpm = tempo
-                    except Exception:
-                        pass
-                    _time.sleep(0.05)
+                self._link = _aalink.Link(self.bpm, _link_loop)
+                self._link.enabled = True
+                self._link_thread_running = True
 
-            _threading.Thread(target=_link_poll, daemon=True).start()
-            logger.info("Ableton Link started (aalink)")
-        except ImportError:
-            pass
+                def _link_poll() -> None:
+                    _last = self.bpm
+                    while self._link_thread_running:
+                        try:
+                            tempo = self._link.tempo
+                            if abs(tempo - _last) > 0.05:
+                                _last = tempo
+                                self._sequencer.set_bpm(tempo)
+                                if not self._clock_follow:
+                                    self.bpm = tempo
+                        except Exception:
+                            pass
+                        _time.sleep(0.05)
+
+                _threading.Thread(target=_link_poll, daemon=True, name="aalink-poll").start()
+                logger.info("Ableton Link started (aalink)")
+            except Exception as e:
+                logger.warning(f"Ableton Link unavailable: {e}")
 
         # Pass MIDI input configuration to the sequencer before start.
         if self._input_device is not None:
@@ -2135,8 +2155,12 @@ class Composition:
 
                 except Exception:
                     import traceback as _tb
-                    print(f"[REBUILD ERROR] {self._builder_fn.__name__}: {_tb.format_exc()}", flush=True)
+                    _tb_str = _tb.format_exc()
+                    print(f"[REBUILD ERROR] {self._builder_fn.__name__}: {_tb_str}", flush=True)
                     logger.exception("Error in pattern builder '%s' (cycle %d) - pattern will be silent this cycle", self._builder_fn.__name__, current_cycle)
+                    _web_ui = getattr(composition_ref, '_web_ui_server', None)
+                    if _web_ui is not None:
+                        _web_ui.push_builder_error(self._builder_fn.__name__, _tb_str)
 
                 # If this rebuild produced notes, unsilence the channel so the
                 # new pattern plays immediately (e.g. after a clear_pattern).

@@ -19,6 +19,7 @@ dependencies = [
     "python-rtmidi",
     "python-osc",
     "websockets",
+    "rich",
 ]
 
 [project.urls]

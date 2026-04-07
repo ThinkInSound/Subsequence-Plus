@@ -139,9 +139,13 @@ class WebUI:
                                     seq.silenced_channels.add(pat.channel)
 
                     elif action == 'repl':
-                        code = cmd.get('code', '').strip()
-                        if code:
-                            asyncio.create_task(self._forward_repl(code, websocket))
+                        remote_ip = websocket.remote_address[0] if websocket.remote_address else ''
+                        if remote_ip not in ('127.0.0.1', '::1', ''):
+                            await websocket.send(json.dumps({'repl_error': 'REPL access is restricted to localhost.'}))
+                        else:
+                            code = cmd.get('code', '').strip()
+                            if code:
+                                asyncio.create_task(self._forward_repl(code, websocket))
 
                     elif action == 'link_toggle':
                         link = getattr(comp, '_link', None)
@@ -534,15 +538,6 @@ class WebUI:
         state["live"] = live.get_ui_state() if live is not None else {"connected": False, "tracks": [], "scenes": [], "clip_grid": []}
 
         return state
-
-    def push_builder_error(self, pattern_name: str, tb: str) -> None:
-
-        """Queue a builder error to be forwarded to all connected web clients."""
-
-        try:
-            self._builder_error_queue.put_nowait({"name": pattern_name, "tb": tb})
-        except Exception:
-            pass
 
     def stop(self) -> None:
 

@@ -21,6 +21,7 @@ Built-in Send Events
 
 import asyncio
 import logging
+import re
 import typing
 
 import pythonosc.dispatcher
@@ -118,6 +119,9 @@ class OscServer:
 			return
 		try:
 			bpm = int(args[0])
+			if not (20 <= bpm <= 400):
+				logger.warning(f"OSC BPM {bpm} out of range (20–400), ignored")
+				return
 			self._composition.set_bpm(bpm)
 		except (ValueError, TypeError):
 			logger.warning(f"Invalid OSC BPM argument: {args[0]}")
@@ -142,4 +146,7 @@ class OscServer:
 		parts = address.split("/")
 		if len(parts) >= 3:
 			key = parts[2]
+			if not re.match(r'^[a-zA-Z0-9_\-]{1,64}$', key):
+				logger.warning(f"OSC /data: invalid key '{key}' rejected")
+				return
 			self._composition.data[key] = args[0]
